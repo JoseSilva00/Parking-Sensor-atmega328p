@@ -1,0 +1,331 @@
+
+
+
+#define F_CPU 16000000UL						
+#include <avr/io.h>		
+#include <avr/io.h>
+#include <stdio.h>
+#include <avr/interrupt.h>					
+#include <util/delay.h>
+int16_t distance  = 0;
+uint16_t cont = 0 ; // contador do valor do TCNT
+int distance_final =0;
+ 
+
+
+typedef struct
+{
+	unsigned char usart:1;
+	unsigned char echo_pin1 :1; //flag que verifica se o echo1
+	unsigned char echo_pin2 :1; //flag que verifica se o echo2
+	unsigned char echo_pin3 :1;
+	unsigned char trigger_pin1 :1;
+	unsigned char trigger_pin2 :1;
+	unsigned char trigger_pin3 :1;
+	unsigned char teste:1;
+	
+	
+}FLAGS_st;
+
+
+char buffer[500];
+volatile FLAGS_st flags = {0,0,0,0,0,0,0};
+
+unsigned char receive_buffer;													
+void inicio()			
+{
+	
+	DDRD|=(1<<DDD7)|(1<<DDD6);//leds
+	DDRB|=(1<<DDB1);//trigger1 como saida
+	DDRB|=(1<<DDB5);//trigger2 como saida
+	DDRB &=~(1<<DDB0);//echo1 como entrada
+	DDRC &=~(1<<DDC0);//echo2 como entrada
+
+ 	PORTB |= (1 << PORTB0);	 //echo1 ligado
+	PORTC |= (1 << PORTC0);	 //echo2 ligado
+	PORTD |= (1<< PORTD2);	 
+	
+	
+	TCCR1A |= 0b00000000; //Normal mode (Counter), TOV1 Flag (Overflow) set on MAX
+	TCCR1B |= 0b00000000; //TIMER1 desligado, ira ser iniciado na interrupção externa
+	
+	
+	TCNT1 = 0;             //Iniciar contador a 0;
+	
+	
+	/*TCCR0A |=(1<<WGM01); //MODO CTC
+	TCCR0B |=(1<<CS02)|(1<<CS00); //P=1024;
+	OCR0A=155;*/
+	//---------------SONAR1-----------------------------------
+	PCICR |= (1 << PCIE0);// PIN change interrupt enable 0
+	PCIFR |=(1<<PCIF0);
+	PCMSK0 |= (1 << PCINT0);//ATIVAR a interrupção no Pino do Echo PORTB0
+	
+	//--------------------Sonar2-------------------------------------
+	
+	PCICR |= (1 << PCIE1);// PIN change interrupt enable 1
+	PCIFR |=(1<<PCIF1);//Pin change interrupt Flag Register
+	PCMSK1 |= (1 << PCINT8);//ATIVAR a interrupção no Pino do Echo2 PORTC0
+	
+	//----------------------Sonar3-----------------------------------
+	DDRD|=(1<<DDD4);//Trigger3_saída
+	DDRD &=~(1<<DDD2);//Echo3_entrada
+	PCICR |= (1 << PCIE2);// PIN change interrupt enable 2
+	PCIFR|=(1<<PCIF2);//Pin change interrupt Flag Register
+	PCMSK2 |= (1<<PCINT20);//ATIVAR a interrupção no Pino do Echo3 PORTD2
+	
+	//-----------------BUZZER------------------------------------------
+	
+	//TIMER2 modo Phase correct, Clear OC2 on compare match, com prescaler de 8 e valor TOP = 0xFF
+
+	/*DDRB|=(1<<DDB3);
+	TCCR2A |= 0b11000001;// 	//Phase correct, Clear OC2 on compare match
+	TCCR2B |= 0b00000011;// 		TOP 0xFF, Prescaler 1
+	OCR2A = 0;			// 		OCR = 0 para iniciar com buzzer desligado
+	*/
+//------------INICIALIZAÇÔES USART--------------------------	
+	UCSR0A=0;
+	UCSR0B |= (1 << RXCIE0) |(1 << RXEN0) | (1 << TXEN0);	//RX Complete Interrupt Enable;Receiver Enable;Transmitter Enable
+	UCSR0C |= (1 << UCSZ01)| (1 << UCSZ00); 	//8 bit data ; 1 stop bit 
+	UBRR0L =103; 					
+	UBRR0H = 0;		
+	sei();
+	}
+
+
+ISR(USART_RX_vect)//interrupção pra a o USART
+{
+	flags.usart=1;
+	receive_buffer = UDR0;
+}
+void send_message(void)// Envio de de dados atraves da USART
+{
+	unsigned char i=0;
+	while(buffer[i]!='\0')
+	{
+		while((UCSR0A & 1<<UDRE0)==0);
+		UDR0=buffer[i];
+		i++;
+	}
+}
+void processar_Rx(void)//funçao para fazer a comunicação entre o modulo de bluetooth e pc
+{
+
+	switch(receive_buffer)
+	{
+		
+		case '1':
+		PORTD &=~(1<<PORTD7);
+		sprintf(buffer,"LED OFF");
+		send_message();
+		flags.usart=0;
+		break;
+		
+		case '2':
+		PORTD|= (1<<PORTD7);
+		flags.usart=0;
+		break;
+		
+		case '3':
+
+		flags.trigger_pin1=1;
+		sprintf(buffer,"Distancia = %d\n\n",distance_final);
+		send_message();
+		_delay_ms(400);
+		if(receive_buffer=='5'){
+		sprintf(buffer,"STOP");
+		send_message();
+		flags.usart=0;
+		}
+		break;
+		
+		case '4':
+
+		flags.trigger_pin2 =1;
+		sprintf(buffer,"Distancia = %d\n\n",distance_final);
+		send_message();
+		_delay_ms(400);
+		if(receive_buffer=='5')
+		{
+		sprintf(buffer,"STOP");
+		send_message();
+		flags.usart=0;
+		}
+			break;
+			
+		case '6':
+
+		flags.trigger_pin3 =1;
+		sprintf(buffer,"Distancia = %d\n\n",distance_final);
+		send_message();
+		_delay_ms(400);
+		if(receive_buffer=='5')
+		{
+			sprintf(buffer,"STOP");
+			send_message();
+			flags.usart=0;
+		}
+			break;
+	}
+}
+void processa_echo1()
+{
+	if(PORTB0==0)
+	{
+		flags.echo_pin1=1;
+	}
+	flags.echo_pin1=0;
+
+}
+void processa_echo2()
+{
+	if(PORTC0==0)
+	{
+		flags.echo_pin2=1;
+	}
+	flags.echo_pin2=0;
+
+}
+void processa_echo3()
+{
+	if(PORTD2==0)
+	{
+		flags.echo_pin3=1;
+	}
+	flags.echo_pin3=0;
+}
+
+ISR(PCINT0_vect)
+{	
+
+	if(flags.echo_pin1==1 )
+	{	
+		
+		TCCR1B=0;// Para o contador
+		cont=TCNT1;//guarda o valor do contador
+		distance=(cont*0.034)/2;//calculo da distancia
+		distance_final=((distance-9.6)/15.824)+1; //distancia ja calibrada
+		TCNT1=0;//coloca a 0
+		flags.echo_pin1=0;
+	}
+	else
+	{	
+		
+		TCNT1=0;
+		flags.echo_pin1=1;
+	}
+}
+ISR(PCINT1_vect)
+{
+
+	if(flags.echo_pin2==1 )
+	{
+		
+		TCCR1B=0;// Para o contador
+		cont=TCNT1;//guarda o valor do contador
+		distance=(cont*0.034)/2;//calculo da distancia
+		distance_final=((distance-9.6)/15.824)+1; //distancia ja calibrada
+		TCNT1=0;//coloca a 0
+		flags.echo_pin2=0;
+	}
+	else
+	{
+		TCNT1=0;
+		flags.echo_pin2=1;
+	}
+}
+ISR(PCINT2_vect)
+{
+
+	if(flags.echo_pin3==1 )
+	{
+		
+		TCCR1B=0;// Para o contador
+		cont=TCNT1;//guarda o valor do contador
+		distance=(cont*0.034)/2;//calculo da distancia
+		distance_final=((distance-9.6)/15.824)+1; //distancia ja calibrada
+		TCNT1=0;//coloca a 0
+		flags.echo_pin3=0;
+		
+		
+	}
+	else
+	{
+		
+		TCNT1=0;
+		flags.echo_pin3=1;
+	}
+}
+
+void processar_trigger1()
+{
+	if (flags.trigger_pin1==1 )
+	{
+	PORTB|=(1<<PORTB1);//liga o trigger
+	TCCR1B|=(1<<CS10);//inicia o contador
+	_delay_us(10);// espera o 10us
+	PORTB &=~(1<<PORTB1);//coloca trigger a 0
+	flags.trigger_pin1=0;	
+	processa_echo1();
+	}
+
+	
+}
+void processar_trigger2()
+{
+	if (flags.trigger_pin2==1 )
+	{
+	PORTB|=(1<<PORTB5);//liga o trigger
+	TCCR1B|=(1<<CS10);//inicia o contador
+	_delay_us(10);// espera o 10us
+	PORTB &=~(1<<PORTB5);//coloca trigger a 0
+	flags.trigger_pin2=0;
+	processa_echo2();
+	}
+	
+	
+}
+void processar_trigger3()
+{
+	if (flags.trigger_pin3==1 )
+	{
+		PORTD|=(1<<PORTD4);//liga o trigger
+		TCCR1B|=(1<<CS10);//inicia o contador
+		_delay_us(10);// espera o 10us
+		PORTD &=~(1<<PORTD4);//coloca trigger a 0
+		flags.trigger_pin3=0;
+		processa_echo3();
+	}
+}
+
+int main(void)
+{
+	inicio();
+	while(1)
+	{	
+			processar_trigger1();
+			processar_trigger2();
+			processar_trigger3();
+			if (distance_final>=10)//se a distancia for maior que 10
+			{
+				PORTD|=(1<<PORTD6);//liga o led
+			}
+			else
+			{
+				PORTD&=~(1<<PORTD6);//desliga o led se for menos q 10
+			}
+			
+			
+		if (flags.usart==1)
+		{
+			processar_Rx();
+		}
+	}
+	return 0;
+}
+
+
+
+
+
+
